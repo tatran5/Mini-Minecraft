@@ -1,0 +1,1530 @@
+#include <scene/terrain.h>
+#include <scene/cube.h>
+#include <iostream>
+#include <string>
+
+
+Terrain::Terrain(OpenGLContext* context) : context(context), dimensions(64, 256, 64)
+{}
+
+BlockType Terrain::getBlockAt(int x, int y, int z) const
+{
+    for (auto p : chunkMap) {
+        float zCoord = (int) (p.first & 0x00000000FFFFFFFF);
+        float xCoord = (int) ((p.first >> 32));
+
+        if (x >= xCoord && x < xCoord + 16.f && z >= zCoord && z < zCoord + 16.f) {
+            return p.second->blockAt(x - xCoord, y, z - zCoord);
+        }
+    }
+    return EMPTY;
+}
+
+bool Terrain::chunkExistsAt(int x, int y, int z) {
+    for (auto p : chunkMap) {
+        float zCoord = static_cast<int> (p.first & 0x00000000FFFFFFFF);
+        float xCoord = static_cast<int> ((p.first >> 32));
+
+        if (x >= xCoord && x < xCoord + 16.f && z >= zCoord && z < zCoord + 16.f) {
+            return true;
+        }
+    }
+    return false;
+
+}
+
+Chunk* Terrain::getChunkAt(int x, int z) {
+    for (auto p : chunkMap) {
+        float zCoord = static_cast<int> (p.first & 0x00000000FFFFFFFF);
+        float xCoord = static_cast<int> ((p.first >> 32));
+
+        if (x >= xCoord && x < xCoord + 16.f && z >= zCoord && z < zCoord + 16.f) {
+            return p.second;
+        }
+    }
+    return nullptr;
+}
+
+void Terrain::setBlockAt(int x, int y, int z, BlockType t)
+{
+    //    std::cout << "trying to set block at" << x << ", " << y << ", " << z << "\n";
+
+    bool usedChunk = false;
+    for (auto p : chunkMap) {
+        float zCoord = static_cast<int> (p.first & 0x00000000FFFFFFFF);
+        float xCoord = static_cast<int> ((p.first >> 32));
+
+
+
+        if (x >= xCoord && x < xCoord + 16.f && z >= zCoord && z < zCoord + 16.f) {
+            p.second->blockAt(x - xCoord, y, z - zCoord) = t;
+            usedChunk = true;
+
+        }
+    }
+
+    if (!usedChunk) {
+        Chunk* newChunk = new Chunk(context);
+
+        //take mod of 16 to determine nearest multiple of 16, coordinate at which to create new chunk
+
+        float xCoord = x - x % 16;
+        float zCoord = z - z % 16;
+
+        if(x < 0 && x % 16 != 0) {
+            xCoord = x - (x % 16 + 16);
+        }
+
+        if (z < 0 && z % 16 != 0) {
+            zCoord = z - (z % 16 + 16);
+        }
+
+
+        uint64_t xzCoord = (static_cast<uint64_t> (xCoord) << 32) | (static_cast<uint64_t> (zCoord) & 0x00000000FFFFFFFF);
+
+
+        float thezcoord = static_cast<int> (xzCoord);
+        float thexcoord = static_cast<int> ((xzCoord >> 32));
+
+
+        newChunk->blockAt(x - xCoord, y, z - zCoord) = t;
+
+        chunkMap.insert(std::pair<uint64_t,Chunk*> (xzCoord, newChunk));
+
+        for (auto p : chunkMap) {
+            float currZ = (int) (p.first & 0x00000000FFFFFFFF);
+            float currX = (int) ((p.first >> 32));
+
+            //back
+            if (currZ == zCoord - 16 && currX == xCoord) {
+                newChunk->back = p.second;
+                p.second->front = newChunk;
+            }
+
+            //front
+            if (currZ == zCoord + 16 && currX == xCoord) {
+                newChunk->front = p.second;
+                p.second->back = newChunk;
+            }
+
+            //left
+            if (currZ == zCoord && currX == xCoord - 16) {
+                newChunk->left = p.second;
+                p.second->right = newChunk;
+            }
+
+            //right
+            if (currZ == zCoord && currX == xCoord + 16) {
+                newChunk->right = p.second;
+                p.second->left = newChunk;
+
+            }
+        }
+
+    }
+}
+
+Terrain::~Terrain() {
+    for(auto p : chunkMap) {
+        delete p.second;
+    }
+}
+
+void Terrain::fillBetween(int x, int z, int bottomLimit, int topLimit, BlockType t)
+{
+    for (int i = bottomLimit; i <= topLimit; ++i)
+    {
+        setBlockAt(x, i, z, t);
+    }
+}
+
+// Fractal Brownian Motion for random height field generation
+float Terrain::rand(glm::vec2 n) {
+    return (glm::fract(sin(glm::dot(n + glm::vec2(91.2328, -19.8232), glm::vec2(12.9898, 4.1414))) * 43758.5453));
+}
+
+float Terrain::cosineInterpolate(float a, float b, float x)
+{
+    float ft = x * 3.1415927;
+    float f = (1 - cos(ft)) * .5;
+
+    return a*(1-f) + b*f;
+}
+
+
+float Terrain::interpNoise2D(float x, float z)
+{
+    float intX = floor(x);
+    float fractX = glm::fract(x);
+    float intZ = floor(z);
+    float fractZ = glm::fract(z);
+
+    float v1 = rand(glm::vec2(intX, intZ));
+    float v2 = rand(glm::vec2(intX + 1, intZ));
+    float v3 = rand(glm::vec2(intX, intZ + 1));
+    float v4 = rand(glm::vec2(intX + 1, intZ + 1));
+
+    float i1 = cosineInterpolate(v1, v2, fractX);
+    float i2 = cosineInterpolate(v3, v4, fractX);
+    return cosineInterpolate(i1, i2, fractZ);
+}
+
+float Terrain::fbm(float x, float z)
+{
+    float total = 0;
+    float persistence = 0.55f;
+    int octaves = 8;
+
+    for(int i = 1 ; i <= octaves; i++)
+    {
+        float freq = pow(2.f, i);
+        float amp = pow(persistence, i);
+
+        total += interpNoise2D(x * freq,
+                               z * freq) * amp;
+    }
+    return total;
+}
+
+void Terrain::setWorldBounds(glm::vec4 newBounds)
+{
+    m_currBounds = newBounds;
+}
+
+void Terrain::createScene(float minX, float maxX, float minZ, float maxZ)
+{
+    m_currBounds = glm::vec4(minX, maxX, minZ, maxZ);
+
+    // Create the basic terrain floor
+    for(int x = minX; x < maxX; ++x)
+    {
+        for(int z = minZ; z < maxZ; ++z)
+        {
+            /*
+            if(getChunkAt(x, z) != nullptr) {
+                if (created.contains(getChunkAt(x, z))) {
+                    std::cout << "continuing in createscene \n";
+                    continue;
+                }
+            }*/
+            for(int y = 0; y <= 255; ++y)
+            {
+                if (y <= 128)
+                {
+                    setBlockAt(x, y, z, STONE);
+                }
+                else if (y > 128 & y <= 255)
+                {
+                    float heightTest = fmin(254, fbm(x / 128.f, z / 128.f) * 32.f + 129.f);
+
+                    fillBetween(x, z, 129, heightTest, DIRT);
+                    setBlockAt(x, heightTest + 1, z, GRASS);
+
+
+                    if (x == 28 && z == 32)
+                    {
+                        m_playerInitPos = glm::vec3(28, heightTest + 3.f, 32);
+                    }
+
+                    break;
+                }
+            }
+        }
+    }
+
+    makeRiver();
+
+    makeTrees();
+
+
+
+}
+
+void Terrain::setEmptyBlocks(float minX, float maxX, float minZ, float maxZ)
+{
+    for(int x = minX; x < maxX; ++x)
+    {
+        for(int z = minZ; z < maxZ; ++z)
+        {
+            for(int y = 0; y <= 255; ++y)
+            {
+                setBlockAt(x, y, z, EMPTY);
+            }
+        }
+    }
+}
+
+
+Chunk::Chunk(OpenGLContext* context) : Drawable(context), blockArray(65536),
+    front(nullptr), back(nullptr), left(nullptr), right(nullptr),
+    createdOpaque(false)
+
+{}
+
+Chunk:: ~Chunk() {}
+
+BlockType& Chunk::blockAt(int x, int y, int z) {
+    return blockArray[x + 16 * y + 256 * 16 * z];
+}
+
+BlockType Chunk::blockAt(int x, int y, int z) const {
+    return blockArray[x + 16 * y + 256 * 16 * z];
+}
+
+void Chunk::setBlockAt(int x, int y, int z, BlockType b) {
+    blockArray[x + 16 * y + 256 * 16 * z] = b;
+}
+
+
+void createSquareIndices(int& initial, std::vector<int>& idx) {
+    for(int i = 0; i + 2 < 4; i++) {
+        idx.push_back(initial);
+        idx.push_back(initial + i + 1);
+        idx.push_back(initial + i + 2);
+    }
+    initial += 4;
+}
+
+
+bool Terrain::isTransparent(BlockType t) {
+    return (t == WATER);
+}
+
+
+void Chunk::pushBlockIntoVBO(std::vector<glm::vec4>& inter,
+                             std::vector<int>& idx,
+                             glm::vec4& defColor, glm::vec2& uvStartCoord,
+                             float& cosPow, float& animatable,
+                             int& currX, int& currY, int& currZ,
+                             float& norLengthBlock, int& initial)
+{
+    //if it is not water and adjacent to water
+    bool opaqueAdjTrans = true;
+    bool opaque = true;
+    if(Terrain::isTransparent(blockAt(currX,currY,currZ))) {
+        opaque = false;
+    }
+    bool adjEmpty = false;
+
+
+    if(currX == 15) {
+        adjEmpty = false;
+        if (right != nullptr) {
+            adjEmpty = (right -> blockAt(0,currY,currZ) == EMPTY);
+            opaqueAdjTrans = Terrain::isTransparent(right -> blockAt(0,currY,currZ)) && opaque;
+        } else {
+            adjEmpty = true;
+        }
+    } else {
+        adjEmpty = (blockArray.at((currX + 1) + 16 * currY + 16 * 256 * currZ) == EMPTY);
+        opaqueAdjTrans = Terrain::isTransparent(blockArray.at((currX + 1) + 16 * currY + 16 * 256 * currZ)) && opaque;
+
+
+    }
+
+
+    // face right of the block------------------------------------------------------------
+
+    if (adjEmpty || opaqueAdjTrans) {
+
+        inter.push_back(glm::vec4(float(currX + 1), float(currY), float(currZ), 1.0f));
+        inter.push_back(glm::vec4(1,0,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x, uvStartCoord.y, cosPow, animatable));
+
+        inter.push_back(glm::vec4(float(currX + 1), float(currY + 1), float(currZ), 1.0f));
+        inter.push_back(glm::vec4(1,0,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x + norLengthBlock,
+                                  uvStartCoord.y,
+                                  cosPow, animatable));
+
+        inter.push_back(glm::vec4(float(currX + 1), float(currY + 1), float(currZ + 1), 1.0f));
+        inter.push_back(glm::vec4(1,0,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x + norLengthBlock,
+                                  uvStartCoord.y + norLengthBlock,
+                                  cosPow, animatable));
+
+        inter.push_back(glm::vec4(float(currX + 1), float(currY), float(currZ + 1), 1.0f));
+        inter.push_back(glm::vec4(1,0,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x,
+                                  uvStartCoord.y + norLengthBlock,
+                                  cosPow, animatable));
+
+        createSquareIndices(initial, idx);
+        adjEmpty = false;
+    }
+
+    if(currX == 0) {
+        adjEmpty = false;
+        if (left != nullptr) {
+            adjEmpty = (left->blockAt(15,currY,currZ) == EMPTY);
+            opaqueAdjTrans = Terrain::isTransparent(left->blockAt(15,currY,currZ)) && opaque;
+
+        } else {
+            adjEmpty = true;
+        }
+    } else {
+        adjEmpty = (blockArray.at((currX - 1) + 16 * currY + 256 * 16 * currZ) == EMPTY);
+        opaqueAdjTrans = Terrain::isTransparent(blockArray.at((currX - 1) + 16 * currY + 256 * 16 * currZ)) && opaque;
+
+
+    }
+
+    // face left of the block------------------------------------------------------------
+
+    if(adjEmpty || opaqueAdjTrans) {
+        inter.push_back(glm::vec4(float(currX), float(currY), float(currZ), 1.0f));
+        inter.push_back(glm::vec4(-1,0,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x,
+                                  uvStartCoord.y,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX), float(currY + 1), float(currZ), 1.0f));
+        inter.push_back(glm::vec4(-1,0,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x + norLengthBlock,
+                                  uvStartCoord.y,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX), float(currY + 1), float(currZ + 1), 1.0f));
+        inter.push_back(glm::vec4(-1,0,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x + norLengthBlock,
+                                  uvStartCoord.y + norLengthBlock,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX), float(currY), float(currZ + 1), 1.0f));
+        inter.push_back(glm::vec4(-1,0,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x,
+                                  uvStartCoord.y + norLengthBlock,
+                                  cosPow,
+                                  animatable));
+
+        createSquareIndices(initial, idx);
+        adjEmpty = false;
+    }
+
+    if(currY == 255) {
+        adjEmpty = true;
+
+    } else {
+        adjEmpty = (blockArray.at(currX + 16 * (currY + 1) + 256 * 16 * currZ) == EMPTY);
+        opaqueAdjTrans = Terrain::isTransparent(blockArray.at(currX + 16 * (currY + 1) + 256 * 16 * currZ)) && opaque;
+
+    }
+
+    // face on top of the block------------------------------------------------------------
+    if (adjEmpty || opaqueAdjTrans) {
+        //don't need to check chunk adjacency since there are no chunks above
+
+        inter.push_back(glm::vec4(float(currX), float(currY + 1), float(currZ), 1.0f));
+        inter.push_back(glm::vec4(0,1,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x,
+                                  uvStartCoord.y,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX + 1), float(currY + 1), float(currZ), 1.0f));
+        inter.push_back(glm::vec4(0,1,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x + norLengthBlock,
+                                  uvStartCoord.y,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX + 1), float(currY + 1), float(currZ + 1), 1.0f));
+        inter.push_back(glm::vec4(0,1,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x + norLengthBlock,
+                                  uvStartCoord.y + norLengthBlock,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX), float(currY + 1), float(currZ + 1), 1.0f));
+        inter.push_back(glm::vec4(0,1,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x,
+                                  uvStartCoord.y + norLengthBlock,
+                                  cosPow,
+                                  animatable));
+
+        createSquareIndices(initial, idx);
+        adjEmpty = false;
+    }
+
+    if(currY == 0) {
+        adjEmpty = true;
+    } else {
+        adjEmpty = (blockArray.at(currX + 16 * (currY - 1) + 256 * 16 * currZ) == EMPTY);
+        opaqueAdjTrans = Terrain::isTransparent(blockArray.at(currX + 16 * (currY - 1) + 256 * 16 * currZ)) && opaque;
+
+    }
+
+
+    // face at bottom of the block------------------------------------------------------------
+    if (adjEmpty || opaqueAdjTrans) {
+        //don't need to check chunk adjacency since there are no chunks below
+        inter.push_back(glm::vec4(float(currX), float(currY), float(currZ), 1));
+        inter.push_back(glm::vec4(0,-1,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x,
+                                  uvStartCoord.y,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX + 1), float(currY), float(currZ), 1));
+        inter.push_back(glm::vec4(0,-1,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x + norLengthBlock,
+                                  uvStartCoord.y,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX + 1), float(currY), float(currZ + 1), 1));
+        inter.push_back(glm::vec4(0,-1,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x + norLengthBlock,
+                                  uvStartCoord.y + norLengthBlock,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX), float(currY), float(currZ + 1), 1));
+        inter.push_back(glm::vec4(0,-1,0,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x,
+                                  uvStartCoord.y + norLengthBlock,
+                                  cosPow,
+                                  animatable));
+
+        createSquareIndices(initial, idx);
+        adjEmpty = false;
+    }
+
+    if(currZ == 0) {
+        adjEmpty = false;
+        if (back != nullptr) {
+            adjEmpty = (back->blockAt(currX,currY,15) == EMPTY);
+            opaqueAdjTrans = Terrain::isTransparent(back->blockAt(currX,currY,15)) && opaque;
+
+        } else {
+            adjEmpty = true;
+        }
+
+    } else {
+        adjEmpty = (blockArray.at(currX + 16 * currY + 256 * 16 * (currZ - 1)) == EMPTY);
+        opaqueAdjTrans = Terrain::isTransparent(blockArray.at(currX + 16 * currY + 256 * 16 * (currZ - 1))) && opaque;
+
+    }
+
+    // face behind block------------------------------------------------------------
+    if(adjEmpty || opaqueAdjTrans) {
+        inter.push_back(glm::vec4(float(currX), float(currY), float(currZ), 1));
+        inter.push_back(glm::vec4(0,0,1,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x,
+                                  uvStartCoord.y,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX + 1), float(currY), float(currZ), 1));
+        inter.push_back(glm::vec4(0,0,1,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x + norLengthBlock,
+                                  uvStartCoord.y,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX + 1), float(currY + 1), float(currZ), 1));
+        inter.push_back(glm::vec4(0,0,1,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x + norLengthBlock,
+                                  uvStartCoord.y + norLengthBlock,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX), float(currY + 1), float(currZ), 1));
+        inter.push_back(glm::vec4(0,0,1,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x,
+                                  uvStartCoord.y + norLengthBlock,
+                                  cosPow,
+                                  animatable));
+
+        createSquareIndices(initial, idx);
+        adjEmpty = false;
+    }
+
+    if(currZ == 15) {
+        adjEmpty = false;
+        if (front != nullptr) {
+            adjEmpty = (front->blockAt(currX,currY,0) == EMPTY);
+            opaqueAdjTrans = Terrain::isTransparent(front->blockAt(currX,currY,0)) && opaque;
+
+        } else {
+            adjEmpty = true;
+        }
+
+    } else {
+        adjEmpty = (blockArray.at(currX + 16 * currY + 256 * 16 * (currZ + 1)) == EMPTY);
+        opaqueAdjTrans = Terrain::isTransparent(blockArray.at(currX + 16 * currY + 256 * 16 * (currZ + 1))) && opaque;
+
+    }
+
+    // face in front of block------------------------------------------------------------
+
+    if(adjEmpty || opaqueAdjTrans) {
+
+        inter.push_back(glm::vec4(float(currX), float(currY), float(currZ + 1), 1));
+        inter.push_back(glm::vec4(0,0,-1,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x,
+                                  uvStartCoord.y,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX + 1), float(currY), float(currZ + 1), 1));
+        inter.push_back(glm::vec4(0,0,-1,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x + norLengthBlock,
+                                  uvStartCoord.y,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX + 1), float(currY + 1), float(currZ + 1), 1));
+        inter.push_back(glm::vec4(0,0,-1,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x + norLengthBlock,
+                                  uvStartCoord.y + norLengthBlock,
+                                  cosPow,
+                                  animatable));
+
+        inter.push_back(glm::vec4(float(currX), float(currY + 1), float(currZ + 1), 1));
+        inter.push_back(glm::vec4(0,0,-1,0));
+        inter.push_back(defColor);
+        inter.push_back(glm::vec4(uvStartCoord.x,
+                                  uvStartCoord.y + norLengthBlock,
+                                  cosPow,
+                                  animatable));
+
+        createSquareIndices(initial, idx);
+        adjEmpty = false;
+    }
+}
+
+
+void Chunk::bindOpaquePart() {
+    count = idxOpaque.size();
+
+    //generateInterleaved();
+    context->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bufInter);
+    context->glBufferData(GL_ELEMENT_ARRAY_BUFFER, interOpaque.size() * sizeof(glm::vec4), interOpaque.data(), GL_STATIC_DRAW);
+
+  //  generateIdx();
+    context->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bufIdx);
+    context->glBufferData(GL_ELEMENT_ARRAY_BUFFER, idxOpaque.size() * sizeof(GLuint), idxOpaque.data(), GL_STATIC_DRAW);
+}
+
+void Chunk::bindNonOpaquePart() {
+    count = idxNonOpaque.size();
+
+   // generateInterleaved();
+    context->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bufInter);
+    context->glBufferData(GL_ELEMENT_ARRAY_BUFFER, interNonOpaque.size() * sizeof(glm::vec4), interNonOpaque.data(), GL_STATIC_DRAW);
+
+  //  generateIdx();
+    context->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bufIdx);
+    context->glBufferData(GL_ELEMENT_ARRAY_BUFFER, idxNonOpaque.size() * sizeof(GLuint), idxNonOpaque.data(), GL_STATIC_DRAW);
+}
+
+void Chunk::clearData() {
+    idxOpaque.clear();
+    idxNonOpaque.clear();
+    interOpaque.clear();
+    interNonOpaque.clear();
+}
+
+
+void Chunk :: create() {
+    clearData();
+    // The below are for UV mapping
+    float sizeWholeImageTexture = 256.f; //the given image is of size 256 x 256 --T
+    float lengthBlock = 16.f;
+    float norLengthBlock = lengthBlock / sizeWholeImageTexture; //normalized length of block
+    glm::vec2 uvStartCoord = glm::vec2(0.f, 0.f);
+    glm::vec4 defColor = glm::vec4(0.2f, 1.0f, 0.6f, 1);
+    float alpha = 1.f; //to marks that the block is opaque
+    float cosPow = 1.f;
+    float animatable = 0.f; //1 means animatable (lava, water), 0 means not
+
+    int initialOpaque = 0;
+    int initialNonOpaque = 0;
+
+    if (!createdOpaque) { //To ensure we only iterate through all blocks once
+        for (int currX = 0; currX < 16; currX++) {
+            for (int currY = 0; currY < 256; currY++) {
+                for (int currZ = 0; currZ < 16; currZ++) {
+
+                    int posInBlockArr = currX + 16 * currY + 16 * 256 * currZ;
+                    BlockType curBlockType = blockArray[posInBlockArr];
+                    if (curBlockType != EMPTY) {
+                        switch(curBlockType)
+                        {
+                        case DIRT:
+                            alpha = 1.f;
+                            defColor = glm::vec4(1, 1, 1, alpha);
+                            cosPow = 1.2f;
+                            uvStartCoord = glm::vec2(2, 0) * norLengthBlock;
+                            animatable = 0.f;
+                            break;
+                        case GRASS:
+                            alpha = 1.f;
+                            defColor = glm::vec4(0, 1, 0, alpha);
+                            cosPow = 1.5f;
+                            uvStartCoord = glm::vec2(8, 2) * norLengthBlock;
+                            animatable = 0.f;
+                            break;
+                        case STONE:
+                            alpha = 1.f;
+                            defColor = glm::vec4(0, 0, 0, alpha);
+                            cosPow = 3.f;
+                            uvStartCoord = glm::vec2(0, 0) * norLengthBlock;
+                            animatable = 0.f;
+                            break;
+                        case GUM:
+                            alpha = 1.f;
+                            defColor = glm::vec4(1, 0, 1, alpha);
+                            cosPow = 1.5f;
+                            uvStartCoord = glm::vec2(2, 8) * norLengthBlock;
+                            animatable = 0.f;
+                            break;
+                        case WATER:
+                            alpha = 0.3f;
+                            defColor = glm::vec4(0, 0, 1, alpha);
+                            cosPow = 5.f;
+                            uvStartCoord = glm::vec2(13, 12) * norLengthBlock;
+                            animatable = 1.f;
+                            break;
+                        case LAVA:
+                            alpha = 1.f;
+                            defColor = glm::vec4(1, 0, 0, alpha);
+                            cosPow = 2.f;
+                            uvStartCoord = glm::vec2(14, 12) * norLengthBlock;
+                            animatable = 1.f;
+                            break;
+                        }
+
+                        if (alpha == 1) { //the block is opaque
+                            pushBlockIntoVBO(interOpaque, idxOpaque, defColor, uvStartCoord, cosPow,
+                                             animatable, currX, currY, currZ, norLengthBlock, initialOpaque);
+                        } else { //the block is not opaque
+                            pushBlockIntoVBO(interNonOpaque, idxNonOpaque, defColor, uvStartCoord, cosPow,
+                                             animatable, currX, currY, currZ, norLengthBlock, initialNonOpaque);
+
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    generateInterleaved();
+    generateIdx();
+}
+
+
+
+Terrain::Turtle::Turtle(glm::vec4 pos, glm::vec4 orientation, float depth)
+    : pos(pos), orientation(orientation), depth(depth)
+{
+
+}
+
+Terrain::Turtle::Turtle(Turtle &t)
+    : pos(t.pos), orientation(t.orientation), depth(t.depth)
+{
+
+}
+
+
+void Terrain::expandString(QString &sentence) {
+    QString newString = "";
+    for(QChar c : sentence) {
+        if(charToExpandedString.contains(c)) {
+            newString += charToExpandedString.value(c);
+        } else {
+            newString += c;
+        }
+        // charToDrawingOperation
+    }
+
+    sentence = newString;
+}
+
+void Terrain::setExpandedStrings(LType r) {
+    charToExpandedString.clear();
+    switch(r) {
+    case DELTA:
+        charToExpandedString.insert('X',"F[+F-F+FX][-F+FX]");
+        break;
+    case LINEAR:
+        charToExpandedString.insert('X',"F[+F--FF][FFFX]");
+        break;
+    case TREE:
+        charToExpandedString.insert('X',"F[+FX<,FX][-FX,>>FX][.,<.FX]");
+        break;
+
+    case BAMBOO:
+        charToExpandedString.insert('X',"F.[+,<FX].F[.>.<FX].F[-.-FX]X");
+
+        break;
+    default:
+        charToExpandedString.insert('X',"F[+F-F+FX][-F+FX]");
+        break;
+
+    }
+}
+
+void Terrain::setDrawingRules(LType r) {
+
+    charToDrawingOperation.insert('F',&Terrain::moveTurtleForwardRand);
+    charToDrawingOperation.insert('-',&Terrain::rotateTurtleNeg);
+    charToDrawingOperation.insert('+',&Terrain::rotateTurtlePos);
+    charToDrawingOperation.insert('[',&Terrain::pushTurtle);
+    charToDrawingOperation.insert(']',&Terrain::popTurtle);
+
+    charToDrawingOperation.insert('<',&Terrain::rotateTurtleXNeg);
+    charToDrawingOperation.insert('>',&Terrain::rotateTurtleXPos);
+
+    charToDrawingOperation.insert('.',&Terrain::rotateTurtleZPos);
+    charToDrawingOperation.insert(',',&Terrain::rotateTurtleZNeg);
+
+
+}
+
+
+void Terrain::moveTurtleUp(LType r) {
+    switch (r) {
+    case TREE:
+    {
+        currTurt->pos.y += 3;
+        break;
+    }
+    default: {
+        break;
+    }
+    }
+}
+
+void Terrain::moveTurtleForwardRand(LType r) {
+    switch (r) {
+    case DELTA:
+        for(int i = 0; i < 5; i++) {
+            glm::vec4 prevPos = currTurt->pos;
+            float randfloat = fbm(prevPos.x, prevPos.z) * 2;
+            float randAng = -30 + fbm(prevPos.x, prevPos.z) * 70;
+            glm::mat4 randRot = glm::rotate(glm::mat4(), glm::radians(randAng),glm::vec3(0.f,1.f,0.f));
+            currTurt->pos += (float) (randfloat + 1.f / fmax(1.f, pow((float) turtleStack.size() * 0.5f, 1.3f))) * randRot * currTurt->orientation ;
+
+            //currTurt->pos += 20.f * currTurt->orientation;
+
+
+            drawLine(prevPos, currTurt->pos, 4.f / fmax(0.5f,turtleStack.size() * 2), WATER);
+
+        }
+        break;
+
+
+    case LINEAR:
+        for(int i = 0; i < 4; i++) {
+            glm::vec4 prevPos = currTurt->pos;
+            float randfloat = 4 + fbm(prevPos.x, prevPos.z) * 8;
+            float randAng = -100 + fbm(prevPos.x, prevPos.z) * 200;
+            glm::mat4 randRot = glm::rotate(glm::mat4(), glm::radians(randAng),glm::vec3(0.f,1.f,0.f));
+
+            currTurt->pos += (float) (randfloat + 1.f / fmax(0.5f, pow((float) turtleStack.size() * 0.5f, 1.3f))) * randRot * currTurt->orientation ;
+
+            //currTurt->pos += 20.f * currTurt->orientation;
+
+
+            drawLine(prevPos, currTurt->pos, 2.f / fmax(0.5f,turtleStack.size() * 0.4), LAVA);
+
+
+        }
+        break;
+
+
+    case TREE:
+    {
+        float randfloat = 1.f + fbm(currTurt->pos.x, currTurt->pos.z) * 4.f / fmax(1, turtleStack.size());
+
+        for(int i = 0; i < randfloat; i ++) {
+            glm::vec4 prevPos = currTurt->pos;
+            float randAng = -90 + fbm(prevPos.x, prevPos.z) * 180;
+            float randX = fbm(prevPos.y, prevPos.z) * 10;
+            float randY = fbm(prevPos.x, prevPos.x + 9.f) * 10 ;
+            float randZ = fbm(prevPos.y, prevPos.z + 4.f) * 10;
+
+            glm::mat4 randRot = glm::rotate(glm::mat4(), glm::radians(randAng),glm::normalize(glm::vec3(randX,randY,randZ)));
+
+            currTurt->pos += randRot * currTurt->orientation;
+
+            int x = floor(currTurt->pos.x);
+            int y = floor(fmax(fmin(currTurt -> pos.y, 255), 0));
+            int z = floor(currTurt->pos.z);
+            for (float j = -currTurt->depth; j < currTurt->depth; j++) {
+                glm::vec4 offset = j * randRot * currTurt->orientation;
+
+                if(chunkExistsAt(x + offset.x, y + offset.y, z + offset.z)) {
+                    setBlockAt(x + offset.x, y + offset.y, z + offset.z, GUM);
+                }
+            }
+        }
+
+        // currTurt->depth = fmax(0.5, currTurt->depth - 1);
+
+        break;
+
+    }
+    case BAMBOO:
+
+        float randfloat = (4.f + fbm(currTurt->pos.x, currTurt->pos.z) * 2.f) / fmax(1, turtleStack.size() * 10);
+
+        for(int i = 0; i < randfloat; i ++) {
+            glm::vec4 prevPos = currTurt->pos;
+
+
+            float randAng = -8 + fbm(prevPos.x, prevPos.z) * 16;
+            float randX = fbm(prevPos.y, prevPos.z) * 10;
+            float randY = fbm(prevPos.x, prevPos.x + 9.f) * 10 ;
+            float randZ = fbm(prevPos.y, prevPos.z + 4.f) * 10;
+
+            glm::mat4 randRot = glm::rotate(glm::mat4(), glm::radians(randAng),glm::normalize(glm::vec3(randX,randY,randZ)));
+
+
+            currTurt->pos += randRot * currTurt->orientation;
+
+            int x = floor(currTurt->pos.x);
+            int y = floor(fmax(fmin(currTurt -> pos.y, 255), 0));
+            int z = floor(currTurt->pos.z);
+            for (float j = -currTurt->depth; j < currTurt->depth; j++) {
+                glm::vec4 offset = j * randRot * currTurt->orientation;
+
+                if(chunkExistsAt(x + offset.x, y + offset.y, z + offset.z)) {
+                    setBlockAt(x + offset.x, y + offset.y, z + offset.z, GUM);
+                }
+            }
+        }
+
+        currTurt->depth = fmax(0.5, currTurt->depth - 3);
+
+        break;
+
+    }
+}
+void Terrain::moveTurtleBackward(LType r) {
+    currTurt->pos -= currTurt->orientation;
+}
+
+void Terrain::rotateTurtleZPos(LType r) {
+    switch (r) {
+    case TREE:
+    {
+        float angle = (50 + fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 50) / fmax(1, turtleStack.size());
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(1.f,0.f,0.f)) * currTurt -> orientation;
+
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void Terrain::rotateTurtleZNeg(LType r) {
+    switch (r) {
+    case TREE:
+    {
+        float angle = -(50 + fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 50) / fmax(1, turtleStack.size());
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(0.f,0.f,1.f)) * currTurt -> orientation;
+
+        break;
+    }
+
+    case BAMBOO:
+    {
+        float angle = -(-100 + fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 200) / fmax(1, turtleStack.size());
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(0.f,0.f,1.f)) * currTurt -> orientation;
+
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+
+void Terrain::rotateTurtleXPos(LType r) {
+    switch (r) {
+    case TREE:
+    {
+
+        float angle =(50 + fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 50) / fmax(1, turtleStack.size());
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(1.f,0.f,0.f)) * currTurt -> orientation;
+
+        break;
+    }
+
+    case BAMBOO:
+    {
+
+        float angle =(-100 + fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 200) / fmax(1, turtleStack.size());
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(1.f,0.f,0.f)) * currTurt -> orientation;
+
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void Terrain::rotateTurtleXNeg(LType r) {
+    switch (r) {
+    case TREE:
+    {
+        float angle = -(50 + fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 50) / fmax(1, turtleStack.size());
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(1.f,0.f,0.f)) * currTurt -> orientation;
+
+        break;
+    }
+    case BAMBOO:
+    {
+        float angle = -(50 + fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 50) / fmax(1, turtleStack.size());
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(1.f,0.f,0.f)) * currTurt -> orientation;
+
+        break;
+    }
+    default:
+        break;
+    }
+
+}
+
+void Terrain::rotateTurtlePos(LType r) {
+
+    switch (r) {
+    case DELTA:
+    {
+        float angle = (50 + fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 40) / fmax(1, turtleStack.size());
+
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(0.f,1.f,0.f)) * currTurt -> orientation;
+        break;
+    }
+    case LINEAR:
+    {
+        float angle = (50 + fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 3) / fmax(1, turtleStack.size());
+
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(0.f,1.f,0.f)) * currTurt -> orientation;
+
+        break;
+    }
+
+    case TREE:
+    {
+        float angle = (50 + fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 50) / fmax(1, turtleStack.size());
+
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(0.f,1.f,0.f)) * currTurt -> orientation;
+        break;
+    }
+
+    case BAMBOO:
+    {
+        float angle = (50 + fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 50) / fmax(1, turtleStack.size());
+
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(0.f,1.f,0.f)) * currTurt -> orientation;
+        break;
+    }
+    }
+
+
+}
+
+void Terrain::rotateTurtleNeg(LType r) {
+
+    switch (r) {
+    case DELTA:
+    {
+        //std::cout << "I am rotating negatively something \n";
+        float angle = (-50 - fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 40) / fmax(1, turtleStack.size());
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(0.f,1.f,0.f)) * currTurt -> orientation;
+
+        break;
+    }
+    case LINEAR:
+    {
+        float angle = (-50 - fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 3) / fmax(1, turtleStack.size());
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(0.f,1.f,0.f)) * currTurt -> orientation;
+
+        break;
+    }
+
+    case TREE:
+    {
+        float angle = -(50 + fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 3) / fmax(1, turtleStack.size());
+
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(0.f,0.f,1.f)) * currTurt -> orientation;
+
+        break;
+    }
+
+    case BAMBOO:
+    {
+        float angle = -(50 + fbm(currTurt -> orientation.x, currTurt -> orientation.z) * 3) / fmax(1, turtleStack.size());
+
+        currTurt -> orientation = glm::rotate(glm::mat4(),glm::radians(angle),glm::vec3(0.f,0.f,1.f)) * currTurt -> orientation;
+
+        break;
+    }
+    }
+}
+
+void Terrain::pushTurtle(LType r) {
+    turtleStack.push(currTurt);
+    currTurt = new Turtle(*currTurt);
+}
+
+void Terrain::popTurtle(LType r) {
+    delete currTurt;
+    currTurt = turtleStack.pop();
+}
+
+void Terrain:: bresenhamAlongH(int x1, int x2, int z1, int z2, int y, float thickness, BlockType type) {
+    if (z2 < z1) {
+        //will be negative
+        int m_new = 2 * (z2 - z1);
+        int slope_error_new = m_new + (x2 - x1);
+        int offset = 0;
+
+
+        for (float x = x1, z = z1; x <= x2; x++)
+        {
+
+
+            if(getChunkAt(x, z) != nullptr) {
+                if (created.contains(getChunkAt(x, z))) {
+                    continue;
+                }
+            }
+            for(float i = -thickness; i < thickness; i++) {
+
+                int bottom = 128;
+                int deep = 15;
+
+                if(chunkExistsAt(x,bottom,z + i) && getBlockAt(x, bottom, z + i) != type) {
+                    fillBetween(x, z + i, bottom, 255, EMPTY);
+                    fillBetween(x, z + i, bottom - deep, bottom, type);
+                    carve(x, z + i, bottom + 1, 7, 10);
+
+                }
+            }
+
+
+
+            // Add slope to increment angle formed
+            //gets smaller since m_new is negative
+            slope_error_new += m_new;
+
+            // Slope error reached limit, time to
+            // increment y and update slope error.
+            if (slope_error_new <= 0)
+            {
+                z--;
+                slope_error_new  += 2 * (x2 - x1);
+            }
+        }
+
+    } else {
+
+        int m_new = 2 * (z2 - z1);
+        int slope_error_new = m_new - (x2 - x1);
+        int offset = 0;
+
+
+        for (int x = x1, z = z1; x <= x2; x++)
+        {
+
+
+            if(getChunkAt(x, z) != nullptr) {
+                if (created.contains(getChunkAt(x, z))) {
+
+                    continue;
+                }
+            }
+            for(float i = -thickness; i < thickness; i++) {
+                int bottom = 128;
+                int deep = 15;
+
+                if(chunkExistsAt(x, bottom, z + i) && getBlockAt(x, bottom, z + i) != type) {
+                    fillBetween(x, z + i, bottom, 255, EMPTY);
+
+                    fillBetween(x,  z + i, bottom - deep, bottom, type);
+
+                    carve(x, z + i, bottom + 1, 7, 10);
+
+                }
+            }
+            // Add slope to increment angle formed
+            slope_error_new += m_new;
+
+            // Slope error reached limit, time to
+            // increment y and update slope error.
+            if (slope_error_new >= 0)
+            {
+                z++;
+                slope_error_new  -= 2 * (x2 - x1);
+            }
+        }
+    }
+
+}
+
+void Terrain::bresenhamAlongV(int x1, int x2, int z1, int z2, int y, float thickness, BlockType type) {
+
+    if (x2 >= x1) {
+        int m_new = 2 * (x2 - x1);
+        int slope_error_new = m_new - (z2 - z1);
+
+        //offset for locked dimension to be drawn, lets us procedurally extend into locked dimension
+        int offset = 0;
+
+        for (int x = x1, z = z1; z <= z2; z++)
+        {
+
+
+
+            if(getChunkAt(x, z) != nullptr) {
+                if (created.contains(getChunkAt(x, z))) {
+                    continue;
+                }
+            }
+            for(float i = -thickness; i < thickness; i++) {
+                int bottom = 128;
+                int deep = 15;
+
+                if(chunkExistsAt(x + i,bottom,z) && getBlockAt(x + i, bottom, z) != type) {
+                    fillBetween(x + i, z, bottom, 255, EMPTY);
+                    fillBetween(x + i, z, bottom - deep, bottom, type);
+                    carve(x + i, z, bottom + 1, 7, 10);
+
+                }
+            }
+            //std::cout << "(" << x << "," << z << ")\n";
+
+            // Add slope to increment angle formed
+            slope_error_new += m_new;
+
+            // Slope error reached limit, time to
+            // increment y and update slope error.
+            if (slope_error_new >= 0)
+            {
+                x++;
+                slope_error_new  -= 2 * (z2 - z1);
+            }
+        }
+
+
+    } else {
+
+        int m_new = 2 * (x2 - x1);
+        int slope_error_new = m_new + (z2 - z1);
+
+        int offset = 0;
+        for (int x = x1, z = z1; z <= z2; z++)
+        {
+
+
+
+            if(getChunkAt(x, z) != nullptr) {
+                if (created.contains(getChunkAt(x, z))) {
+
+                    continue;
+                }
+            }
+            for(float i = -thickness; i < thickness; i++) {
+                int bottom = 128;
+                int deep = 15;
+
+                if(chunkExistsAt(x + i,bottom,z) && getBlockAt(x + i, bottom, z) != type) {
+                    fillBetween(x + i, z, bottom, 255, EMPTY);
+                    fillBetween(x + i, z, bottom - deep, bottom, type);
+
+                    carve(x + i, z, bottom + 1, 7, 10);
+
+                }
+            }
+
+            //std::cout << "(" << x << "," << z << ")\n";
+
+            // Add slope to increment angle formed
+            slope_error_new += m_new;
+
+            // Slope error reached limit, time to
+            // increment y and update slope error.
+            if (slope_error_new <= 0)
+            {
+                x--;
+                slope_error_new  += 2 * (z2 - z1);
+            }
+        }
+
+    }
+
+}
+
+//uses bresenhams line algorithm
+void Terrain::drawLine(glm::vec4 v1, glm::vec4 v2, float thickness, BlockType type) {
+    glm::vec4 start = v1;
+    glm::vec4 end = v2;
+
+    if(v1.x > v2.x) {
+        start = v2;
+        end = v1;
+
+    }
+    int x1 = start.x;
+    int z1 = start.z;
+    int x2 = end.x;
+    int z2 = end.z;
+
+    // std::cout << "START: " << start.x << ", " << start.z <<  " END: " <<end.x << ", " << end.z << "\n";
+    if (x2 < x1) {
+        // std::cout << '\n';
+    }
+
+    if(fabs(x1 - x2) > fabs(z1 - z2)) {
+
+        if(!(created.contains(getChunkAt(x1,z1)) && created.contains(getChunkAt(x2,z2)))) {
+
+
+            bresenhamAlongH(x1, x2, z1, z2, 128, thickness, type);
+
+
+        }
+    } else {
+
+        if(v1.z > v2.z) {
+            start = v2;
+            end = v1;
+
+        } else {
+            start = v1;
+            end = v2;
+        }
+        x1 = start.x;
+        z1 = start.z;
+        x2 = end.x;
+        z2 = end.z;
+
+        if(!(created.contains(getChunkAt(x1,z1)) && created.contains(getChunkAt(x2,z2)))) {
+            bresenhamAlongV(x1, x2, z1, z2, 128, thickness, type);
+
+
+        }
+
+    }
+
+}
+
+void Terrain::makeRiver() {
+    currTurt = new Turtle(glm::vec4(32,128,16,1),glm::vec4(1,0,0,1),0);
+    setExpandedStrings(DELTA);
+    setDrawingRules(DELTA);
+    QString axiom = "FX";
+
+    for(int i = 0; i < 5; i++) {
+        expandString(axiom);
+    }
+
+    for(QChar c : axiom) {
+        if(charToDrawingOperation.contains(c)) {
+            Rule r = charToDrawingOperation.value(c);
+            (this->*r)(DELTA);
+        }
+    }
+
+    delete currTurt;
+
+    currTurt = new Turtle(glm::vec4(32,128,48,1),glm::vec4(1,0,0,1),0);
+    setExpandedStrings(LINEAR);
+    setDrawingRules(LINEAR);
+    axiom = "FX";
+
+    for(int i = 0; i < 3; i++) {
+        expandString(axiom);
+    }
+
+    for(QChar c : axiom) {
+        if(charToDrawingOperation.contains(c)) {
+            Rule r = charToDrawingOperation.value(c);
+            (this->*r)(LINEAR);
+        }
+    }
+
+    // std::cout << axiom.toStdString() << "\n";
+
+}
+
+
+void Terrain :: makeTrees() {
+    for(auto p : chunkMap) {
+
+        float zCoord = (int) (p.first & 0x00000000FFFFFFFF);
+        float xCoord = (int) ((p.first >> 32));
+
+        int randX = floor(fbm(xCoord, zCoord) * 16);
+        int randZ = floor(fbm(xCoord + 7, zCoord - 3) * 16);
+        float chance = fbm(xCoord + 1, zCoord + 10) * 1.f;
+
+        float x = randX + xCoord;
+        float z = randZ + zCoord;
+
+        float heightTest = findTop(x,z);
+
+
+        if(chance > 0.9) {
+
+            //stay at z = 16
+            delete currTurt;
+            //currTurt = new Turtle(glm::vec4(x,z,heightTest,1),glm::vec4(0,0,1,1),0, Z_AXIS);
+
+            currTurt = new Turtle(glm::vec4(x,heightTest,z,1),glm::vec4(0,1,0,1),4);
+
+            setExpandedStrings(BAMBOO);
+            setDrawingRules(DELTA);
+            QString axiom = "FX";
+
+
+            int branches = floor(fbm(xCoord + 12, zCoord - 12) * 2);
+
+
+            for(int i = 0; i < 2 + branches; i++) {
+                expandString(axiom);
+            }
+
+            for(QChar c : axiom) {
+                if(charToDrawingOperation.contains(c)) {
+                    Rule r = charToDrawingOperation.value(c);
+                    (this->*r)(BAMBOO);
+                }
+            }
+
+            std::cout << axiom.toStdString() << "\n";
+        }
+
+
+        randX = floor(fbm(xCoord - 19, zCoord + 10) * 16);
+        randZ = floor(fbm(xCoord + 1, zCoord - 7) * 16);
+        chance = fbm(xCoord + 3, zCoord + 8) * 1.f;
+
+        if(chance > 0.91) {
+
+
+            x = randX + xCoord;
+            z = randZ + zCoord;
+
+            heightTest = findTop(x,z);
+
+
+            //stay at z = 16
+            delete currTurt;
+            //currTurt = new Turtle(glm::vec4(x,z,heightTest,1),glm::vec4(0,0,1,1),0, Z_AXIS);
+
+            currTurt = new Turtle(glm::vec4(x,heightTest,z,1),glm::vec4(0,1,0,1),4);
+
+            setExpandedStrings(TREE);
+            setDrawingRules(DELTA);
+            QString axiom = "FX";
+
+
+            int branches = floor(fbm(xCoord + 12, zCoord - 12) * 2);
+
+            for(int i = 0; i < 2 + branches; i++) {
+                expandString(axiom);
+            }
+
+            for(QChar c : axiom) {
+                if(charToDrawingOperation.contains(c)) {
+                    Rule r = charToDrawingOperation.value(c);
+                    (this->*r)(TREE);
+                }
+            }
+
+            std::cout << axiom.toStdString() << "\n";
+
+
+        }
+
+
+
+
+
+    }
+
+}
+
+
+int Terrain::findTop(int x, int z) {
+    for(int y = 0; y < 256; y++) {
+        if(getBlockAt(x,y,z) == EMPTY) {
+            return y;
+        }
+    }
+    return 256;
+}
+
+
+float Terrain::calcHeightTest(int x, int z) {
+    return fmin(254, fbm(x / 128.f, z / 128.f) * 32.f + 129.f);
+
+}
+
+void Terrain::carve(int x, int z, int min, int radius, float fallOff) {
+
+
+    int posXHeight = calcHeightTest(x + radius + 1, z);
+    int posZHeight = calcHeightTest(x, z + radius + 1);
+    int negXHeight = calcHeightTest(x - radius - 1, z);
+    int negZHeight = calcHeightTest(x, z - radius - 1);
+
+    for(int i = -radius; i < radius + 1; i++) {
+        for(int j = -radius; j < radius + 1; j++) {
+            float interpX = glm::mix(negXHeight, posXHeight, ((float) (i + radius) / (2 * radius)));
+            float interpZ = glm::mix(negZHeight, posZHeight, ((float) (j + radius) / (2 * radius)));
+
+
+            float interpHeight = (interpX + interpZ) * 0.5f;
+
+            if(interpHeight < min) {
+                std::cout <<"lESS THAN 0" << '\n';
+            }
+
+            int height = min;
+
+            height = glm::mix(min, (int) interpHeight, ((float) (abs(i) + abs(j)) / (2 * radius))) + pow((abs(i) + abs(j)) * fallOff, 0.5);
+
+
+            if(getBlockAt(x + i, height, z + j) != EMPTY && chunkExistsAt(x + i, height, z + j)) {
+                fillBetween(x + i, z + j, height, 255, EMPTY);
+            }
+
+
+        }
+    }
+}

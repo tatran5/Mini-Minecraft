@@ -1,0 +1,8 @@
+finalHelpLog
+Coding:Questions: Online Help:
+11/15
+- I wasn't sure how to create a nice terrain, so I read a lot of online research about it. I didn't end up using a lot of it but there was one on cosine interpolation that I used in my code. I can't seem to find the exact link. 
+In-person Help:
+11/15 
+Adam helped me to make my fbm function smoother. 
+Bugs:

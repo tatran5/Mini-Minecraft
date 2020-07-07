@@ -1,0 +1,5 @@
+Just multithreading, swimming, and overlay 
+https://github.com/CIS-460-2018/final-project-mini-minecraft-the-adam-s-famally/commit/ca2294cd75b5d182d86004ac78edb838f8a098ff
+
+Since I still haven't figured out how to make multithreading works with river generation, here is a separate commit for that
+https://github.com/CIS-460-2018/final-project-mini-minecraft-the-adam-s-famally/commit/4d28da40f20d58d06d46a3c0a18208afb31cff44

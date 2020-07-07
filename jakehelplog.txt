@@ -1,0 +1,17 @@
+helplog
+november 12
+
+looked up how to construct a std::Vector with a certain size for the chunk array https://stackoverflow.com/questions/11457571/how-to-set-initial-size-of-stdvector
+
+november 14
+looked up ways to interleave vbo, learned that I had to account for the current element in the stride of glVertexAttribPointer https://stackoverflow.com/questions/19986570/interleaved-vbo-with-coords-normals-and-color
+
+looked up documentation for glVertexAttribPointer https://www.khronos.org/registry/OpenGL-Refpages/gl4/html/glVertexAttribPointer.xhtml
+
+saturday 17
+looked up the mechanics for calling modulus on float, needed for placing chunks at negative coordinates, at https://stackoverflow.com/questions/12276675/modulus-with-negative-numbers-in-c/21470301
+
+
+looked up how to extract upper and lower bits from int64, eventually learned that I had to cast to an int not a float, https://stackoverflow.com/questions/1447798/i-want-to-get-the-low-32-bit-of-a-int64-as-int32/1447807
+
+

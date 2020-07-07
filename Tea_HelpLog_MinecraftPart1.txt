@@ -1,0 +1,23 @@
+11.13.18 Tue
+12:19 AM
+- How to handle key press event syntax wise?
+- Similar to keypress
+  QKeyEvent *event
+  event -> key() == Qt::Key_X
+- https://forum.qt.io/topic/20982/solved-how-to-handle-all-the-keys-in-key-press-release-event/3
+
+12:52 AM
+- How to get the location of the mouse on the screen?
+- The functions pos(), x(), and y() give the cursor position relative to the widget that
+  receives the mouse event. If you move the widget as a result of the mouse event,
+  use the global position returned by globalPos() to avoid a shaking motion.
+- http://doc.qt.io/qt-5/qmouseevent.html#QMouseEvent
+
+11.14.18 Wed
+- Key release kept being called when the key is held down?
+- This is an expected behavior. "What you can do however is to check the autoRepeat()"
+- https://wiki.qt.io/Technical_FAQ#When_keeping_a_key_pressed_down.2C_then_I_receive_a_number_of_keyReleaseEvents.28.29_in_addition_to_keyPressEvents.28.29._Why_is_this_happening_and_what_can_be_done_to_only_get_a_mousePressEvent.28.29_.3F
+
+11.18.18 Sun
+- How to do the ray tracing / volume casting?
+- Evie
